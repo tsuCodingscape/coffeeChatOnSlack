@@ -16,16 +16,16 @@ async function main(): Promise<void> {
   let app: App;
 
   if (isProduction) {
-    // ── Production: HTTP mode with ExpressReceiver ──────────────────────────
-    // Render provides a public HTTPS URL so Slack can send events via HTTP
     const receiver = new ExpressReceiver({
       signingSecret: process.env.SLACK_SIGNING_SECRET!,
       endpoints: '/slack/events',
+      processBeforeResponse: true,  
     });
-
+  
     app = new App({
       token: process.env.SLACK_BOT_TOKEN,
       receiver,
+      processBeforeResponse: true,
     });
 
     // Register all handlers
