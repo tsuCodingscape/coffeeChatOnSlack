@@ -18,6 +18,7 @@ import {
 import { buildMatches, MatchGroup } from './algorithm';
 import { pickIcebreaker } from '../utils/icebreakers';
 import { getNextRunDate } from '../utils/schedule';
+import { suggestMeetingTime } from '../utils/timezone';
 
 interface Program {
   id: number;
@@ -138,6 +139,8 @@ async function sendIntroMessage(
 
     console.log(`📧 Emails fetched for calendar: ${emails.join(', ')}`);
 
+    const timezones = group.participants.map((p) => p.timezone ?? null);
+
     // Collect Zoom links from participant records
     const zoomLinks = group.participants
       .map((p) => p.zoom_link)
@@ -162,6 +165,7 @@ async function sendIntroMessage(
       displayNames,
       emails,
       zoomLinks,
+      timezones,
       icebreaker,
       introTemplate,
       matchId
@@ -192,28 +196,31 @@ function buildIntroBlocks(
   displayNames: string[],
   emails: string[],
   zoomLinks: string[],
+  timezones: (string | null)[], 
   icebreaker: string,
   customTemplate: string,
   matchId: number
 ): (Block | KnownBlock)[] {
   const mentions = participants.map((p) => `<@${p.slack_user_id}>`).join(' & ');
 
+  const suggestion = suggestMeetingTime(timezones);
+  const startTime = suggestion.calendarStart;
+  const endTime = suggestion.calendarEnd;
+  
+  const timeSuggestion = suggestion.displayText
+    ? `\n\n🕐 *Suggested time:* ${suggestion.displayText}`
+    : '';
+
   const introText = customTemplate.trim()
     ? customTemplate
         .replace('{mentions}', mentions)
         .replace('{icebreaker}', icebreaker)
-    : `${mentions} — you've been matched for a coffee chat! ☕\n\nFind a 20–30 min slot that works for both of you and get to know each other.`;
-
+        : `${mentions} — you've been matched for a coffee chat! ☕\n\nFind a 20–30 min slot that works for both of you and get to know each other.${timeSuggestion}`;
+        
   const eventTitle = encodeURIComponent(`☕ Coffee Chat: ${displayNames.join(' & ')}`);
   const eventDetails = encodeURIComponent(
     `Intro coffee chat set up by Coffee Roulette.\n\nConversation starter: ${icebreaker}`
   );
-  const now = new Date();
-  now.setMinutes(0, 0, 0);
-  now.setHours(now.getHours() + 1);
-  const startTime = now.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
-  const endTime = new Date(now.getTime() + 30 * 60 * 1000)
-    .toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
 
   const guestParams = emails
     .map((e: string) => `&add=${encodeURIComponent(e)}`)

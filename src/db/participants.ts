@@ -10,6 +10,7 @@ export interface Participant {
   snoozed_until: Date | null;
   priority: boolean;
   zoom_link: string | null;
+  timezone: string | null;
   joined_at: Date;
   updated_at: Date;
 }
@@ -99,9 +100,6 @@ export async function clearPriority(participantId: number): Promise<void> {
   );
 }
 
-/**
- * Save a user's Zoom personal meeting room link.
- */
 export async function saveZoomLink(
   workspaceId: number,
   slackUserId: string,
@@ -112,6 +110,23 @@ export async function saveZoomLink(
      SET zoom_link = $3, updated_at = NOW()
      WHERE workspace_id = $1 AND slack_user_id = $2`,
     [workspaceId, slackUserId, zoomLink]
+  );
+}
+
+/**
+ * Save a user's IANA timezone string.
+ * e.g. "America/Los_Angeles", "America/New_York"
+ */
+export async function saveTimezone(
+  workspaceId: number,
+  slackUserId: string,
+  timezone: string
+): Promise<void> {
+  await db.query(
+    `UPDATE participants
+     SET timezone = $3, updated_at = NOW()
+     WHERE workspace_id = $1 AND slack_user_id = $2`,
+    [workspaceId, slackUserId, timezone]
   );
 }
 
