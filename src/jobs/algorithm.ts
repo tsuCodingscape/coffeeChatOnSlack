@@ -6,6 +6,8 @@ const SCORE_NEVER_MATCHED    =  100;
 const SCORE_NOT_RECENT       =   50;
 const PENALTY_PREVIOUS_CYCLE = -1000;
 const PENALTY_RECENT         =  -500;
+const PENALTY_CONFIRMED_MET = -800; // met and confirmed, avoid for 180 days
+
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -32,7 +34,8 @@ export interface MatchResult {
 export function buildMatches(
   participants: Participant[],
   recentPairs: Set<string>,
-  lastRoundPairs: Set<string>
+  lastRoundPairs: Set<string>,
+  confirmedPairs: Set<string> = new Set()
 ): MatchResult {
   if (participants.length < 2) {
     return { groups: [], oddPersonOut: null };
@@ -54,7 +57,7 @@ export function buildMatches(
     const person = pool[i];
     if (matched.has(person.id)) continue;
 
-    const partner = pickBestPartner(person, pool, matched, recentPairs, lastRoundPairs);
+    const partner = pickBestPartner(person, pool, matched, recentPairs, lastRoundPairs, confirmedPairs);
     if (!partner) continue;
 
     matched.add(person.id);
@@ -76,7 +79,8 @@ function pickBestPartner(
   pool: Participant[],
   matched: Set<number>,
   recentPairs: Set<string>,
-  lastRoundPairs: Set<string>
+  lastRoundPairs: Set<string>,
+  confirmedPairs: Set<string>
 ): Participant | null {
   let bestScore = -Infinity;
   let bestCandidate: Participant | null = null;
@@ -85,7 +89,7 @@ function pickBestPartner(
     if (candidate.id === person.id) continue;
     if (matched.has(candidate.id)) continue;
 
-    const score = scorePair(person.id, candidate.id, recentPairs, lastRoundPairs);
+    const score = scorePair(person.id, candidate.id, recentPairs, lastRoundPairs, confirmedPairs);
     if (score > bestScore) {
       bestScore = score;
       bestCandidate = candidate;
@@ -99,10 +103,12 @@ function scorePair(
   idA: number,
   idB: number,
   recentPairs: Set<string>,
-  lastRoundPairs: Set<string>
+  lastRoundPairs: Set<string>,
+  confirmedPairs: Set<string>
 ): number {
   const key = pairKey(idA, idB);
   if (lastRoundPairs.has(key)) return PENALTY_PREVIOUS_CYCLE;
+  if (confirmedPairs.has(key))  return PENALTY_CONFIRMED_MET;
   if (recentPairs.has(key))    return PENALTY_RECENT;
   return SCORE_NEVER_MATCHED;
 }

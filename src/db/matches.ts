@@ -11,10 +11,9 @@ export interface Match {
 }
 
 /**
- * Returns a Set of participant ID pairs that have been matched recently.
- * Used by the matching algorithm to penalise repeat pairings.
- *
- * The key format is "minId:maxId" so the lookup is order-independent.
+ * Returns recent match pairs with two separate sets:
+ * - confirmedPairs: matched AND confirmed they met (180 day lookback)
+ * - recentPairs: matched but unconfirmed (90 day lookback)
  */
 export async function getRecentMatchPairs(
   workspaceId: number,
@@ -35,6 +34,45 @@ export async function getRecentMatchPairs(
       AND mr.status = 'completed'
     `,
     [workspaceId, lookbackDays]
+  );
+
+  const pairs = new Set<string>();
+  for (const row of rows) {
+    pairs.add(pairKey(row.participant_a_id, row.participant_b_id));
+    if (row.participant_c_id !== null) {
+      pairs.add(pairKey(row.participant_a_id, row.participant_c_id));
+      pairs.add(pairKey(row.participant_b_id, row.participant_c_id));
+    }
+  }
+  return pairs;
+}
+
+/**
+ * Returns pairs that have confirmed they met — used for extended
+ * repeat prevention (180 days instead of 90).
+ */
+export async function getConfirmedMatchPairs(
+  workspaceId: number
+): Promise<Set<string>> {
+  const { rows } = await db.query<{
+    participant_a_id: number;
+    participant_b_id: number;
+    participant_c_id: number | null;
+  }>(
+    `
+    SELECT m.participant_a_id, m.participant_b_id, m.participant_c_id
+    FROM matches m
+    JOIN match_rounds mr ON mr.id = m.match_round_id
+    JOIN programs p      ON p.id  = mr.program_id
+    WHERE p.workspace_id = $1
+      AND mr.run_at >= NOW() - INTERVAL '180 days'
+      AND mr.status = 'completed'
+      AND EXISTS (
+        SELECT 1 FROM feedback f
+        WHERE f.match_id = m.id AND f.did_meet = TRUE
+      )
+    `,
+    [workspaceId]
   );
 
   const pairs = new Set<string>();

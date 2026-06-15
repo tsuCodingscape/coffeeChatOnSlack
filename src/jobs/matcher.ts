@@ -13,6 +13,7 @@ import {
   getLastRoundMatchPairs,
   saveRoundWithMatches,
   updateMatchMessageTs,
+  getConfirmedMatchPairs,
 } from '../db/matches';
 import { buildMatches, MatchGroup } from './algorithm';
 import { pickIcebreaker } from '../utils/icebreakers';
@@ -54,13 +55,18 @@ export async function runMatchingJob(
     return;
   }
 
-  const [recentPairs, lastRoundPairs] = await Promise.all([
+  const [recentPairs, lastRoundPairs, confirmedPairs] = await Promise.all([
     getRecentMatchPairs(workspace.id, 90),
     getLastRoundMatchPairs(program.id),
+    getConfirmedMatchPairs(workspace.id),
   ]);
-
-  const { groups, oddPersonOut } = buildMatches(participants, recentPairs, lastRoundPairs);
-
+  
+  const { groups, oddPersonOut } = buildMatches(
+    participants,
+    recentPairs,
+    lastRoundPairs,
+    confirmedPairs  
+  );
   if (groups.length === 0) {
     console.log('⚠️  No groups produced — skipping run');
     await advanceNextRun(program);
