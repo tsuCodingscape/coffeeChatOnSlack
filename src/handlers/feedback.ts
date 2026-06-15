@@ -3,24 +3,17 @@ import { db } from '../db/pool';
 import { findWorkspaceBySlackId } from '../db/workspaces';
 
 /**
- * Handles the two interactive buttons on the intro DM:
+ * Handles interactive buttons on both the intro DM and nudge DM:
  *
- *   📅 Schedule a time — opens Google Calendar (link button, no handler needed)
- *   ✅ We met!         — records feedback and updates the message
+ *   ✅ We met!      — records feedback and updates the message
+ *   ⏰ Not yet      — acknowledges and encourages without pressure
+ *   📅 Schedule     — acknowledges the calendar button click (required for mobile)
  */
 export function registerFeedbackHandlers(app: App): void {
 
-  // The calendar button is a `url` type button — Slack opens the link
-  // directly without sending an action to the server, so no handler needed.
-
-  // "We met!" button — record feedback and update the message
+  // ── We met! ────────────────────────────────────────────────────────────────
   app.action('confirm_met', async ({ ack, body, action, client, logger }) => {
     await ack();
-
-  // Acknowledge the calendar button click — required for mobile
-  app.action('schedule_calendar', async ({ ack }) => {
-    await ack();
-  });
 
     try {
       const matchId = parseInt((action as { value: string }).value, 10);
@@ -28,7 +21,6 @@ export function registerFeedbackHandlers(app: App): void {
       const workspace = await findWorkspaceBySlackId(body.team?.id ?? '');
       if (!workspace) return;
 
-      // Find the participant record for this user
       const { rows: participantRows } = await db.query<{ id: number }>(
         `SELECT id FROM participants WHERE workspace_id = $1 AND slack_user_id = $2`,
         [workspace.id, slackUserId]
@@ -37,7 +29,6 @@ export function registerFeedbackHandlers(app: App): void {
 
       const participantId = participantRows[0].id;
 
-      // Upsert feedback — safe to click multiple times
       await db.query(
         `
         INSERT INTO feedback (match_id, participant_id, did_meet)
@@ -48,7 +39,7 @@ export function registerFeedbackHandlers(app: App): void {
         [matchId, participantId]
       );
 
-      // Check if ALL participants in this match have confirmed
+      // Check if ALL participants confirmed
       const { rows: matchRows } = await db.query<{
         participant_a_id: number;
         participant_b_id: number;
@@ -76,7 +67,7 @@ export function registerFeedbackHandlers(app: App): void {
       const confirmedCount = parseInt(feedbackRows[0].count, 10);
       const allConfirmed = confirmedCount >= participantIds.length;
 
-      // Update the original message to reflect the confirmation
+      // Update the message to reflect confirmation
       const messageBody = body as {
         message?: { ts?: string; blocks?: unknown[] };
         channel?: { id?: string };
@@ -91,12 +82,9 @@ export function registerFeedbackHandlers(app: App): void {
         messageBody.container?.message_ts;
 
       if (channelId && messageTs) {
-        // Replace the actions block with a confirmation message
         const existingBlocks = (messageBody.message?.blocks ?? []) as unknown[];
-
-        // Remove the last actions block and context block, add confirmation
         const updatedBlocks = [
-          ...existingBlocks.slice(0, -2), // keep intro + icebreaker blocks
+          ...existingBlocks.slice(0, -2),
           {
             type: 'section',
             text: {
@@ -132,5 +120,62 @@ export function registerFeedbackHandlers(app: App): void {
     } catch (err) {
       logger.error('Error handling confirm_met action:', err);
     }
+  });
+
+  // ── Not yet ────────────────────────────────────────────────────────────────
+  app.action('nudge_not_yet', async ({ ack, body, client, logger }) => {
+    await ack();
+
+    try {
+      const messageBody = body as {
+        message?: { ts?: string; blocks?: unknown[] };
+        channel?: { id?: string };
+        container?: { channel_id?: string; message_ts?: string };
+      };
+
+      const channelId =
+        messageBody.channel?.id ??
+        messageBody.container?.channel_id;
+      const messageTs =
+        messageBody.message?.ts ??
+        messageBody.container?.message_ts;
+
+      if (channelId && messageTs) {
+        await client.chat.update({
+          channel: channelId,
+          ts: messageTs,
+          text: `⏰ No worries! Life gets busy. Hope you two get a chance to connect soon. ☕`,
+          blocks: [
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: `⏰ No worries! Life gets busy. Hope you two get a chance to connect soon. ☕\n\nWhen you do meet, hit the button below to let us know!`,
+              },
+            },
+            {
+              type: 'actions',
+              elements: [
+                {
+                  type: 'button',
+                  text: { type: 'plain_text', text: '✅ We met!', emoji: true },
+                  style: 'primary',
+                  value: (body as { actions?: Array<{ value?: string }> }).actions?.[0]?.value ?? '0',
+                  action_id: 'confirm_met',
+                },
+              ],
+            },
+          ],
+        });
+      }
+
+    } catch (err) {
+      logger.error('Error handling nudge_not_yet action:', err);
+    }
+  });
+
+  // ── Schedule calendar button — must be acked for mobile ───────────────────
+  app.action('schedule_calendar', async ({ ack }) => {
+    await ack();
   });
 }

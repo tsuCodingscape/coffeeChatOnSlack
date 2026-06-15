@@ -1,16 +1,17 @@
 import { runMatchingJob } from './matcher';
+import { runNudgeJob } from './nudge';
 import { db } from '../db/pool';
 
 /**
- * Polls the database every minute for programs whose next_run_at has passed.
+ * Scheduler — two jobs:
  *
- * This is intentionally simple for the MVP — no external queue or cron daemon
- * needed. For larger scale, replace with a proper job queue (e.g. pg-boss,
- * BullMQ) or a cloud scheduler (AWS EventBridge, Railway cron, etc.).
+ * 1. Matching job  — polls every 60 seconds for programs due to run
+ * 2. Nudge job     — runs once daily to follow up on unconfirmed matches
  */
 export function startScheduler(): void {
   console.log('⏰ Scheduler started — checking every 60 seconds');
 
+  // ── Matching job — runs every 60 seconds ───────────────────────────────────
   setInterval(async () => {
     try {
       await checkAndRunDuePrograms();
@@ -19,16 +20,24 @@ export function startScheduler(): void {
     }
   }, 60_000);
 
-  // Also run once immediately on startup to catch any missed runs
+  // ── Nudge job — runs once every 24 hours ──────────────────────────────────
+  setInterval(async () => {
+    try {
+      await runNudgeJob();
+    } catch (err) {
+      console.error('Nudge scheduler error:', err);
+    }
+  }, 24 * 60 * 60 * 1000);
+
+  // Run both once on startup after a short delay
+  // to let the Slack connection stabilize first
   setTimeout(() => {
     checkAndRunDuePrograms().catch(console.error);
-  }, 5000); // wait 5s for Socket Mode connection to stabilize
+    runNudgeJob().catch(console.error);
+  }, 5000);
 }
 
 async function checkAndRunDuePrograms(): Promise<void> {
-  // Fetch all programs that are due and not paused
-  // The FOR UPDATE SKIP LOCKED ensures that if multiple app instances are
-  // running (e.g. after a deploy), only one picks up each program.
   const { rows } = await db.query(
     `
     SELECT
@@ -72,7 +81,6 @@ async function checkAndRunDuePrograms(): Promise<void> {
       bot_token:            row.bot_token,
     };
 
-    // Run each program sequentially to avoid hammering Slack rate limits
     await runMatchingJob(program, workspace);
   }
 }
