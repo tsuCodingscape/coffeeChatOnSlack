@@ -19,6 +19,7 @@ import { buildMatches, MatchGroup } from './algorithm';
 import { pickIcebreakerWeighted } from '../utils/icebreakers_weighted';
 import { getNextRunDate } from '../utils/schedule';
 import { suggestMeetingTime } from '../utils/timezone';
+import { getParticipantTeams } from '../db/exclusions';
 
 interface Program {
   id: number;
@@ -56,17 +57,19 @@ export async function runMatchingJob(
     return;
   }
 
-  const [recentPairs, lastRoundPairs, confirmedPairs] = await Promise.all([
+  const [recentPairs, lastRoundPairs, confirmedPairs, teamMap] = await Promise.all([
     getRecentMatchPairs(workspace.id, 90),
     getLastRoundMatchPairs(program.id),
     getConfirmedMatchPairs(workspace.id),
+    getParticipantTeams(workspace.id),
   ]);
-
+  
   const { groups, oddPersonOut } = buildMatches(
     participants,
     recentPairs,
     lastRoundPairs,
-    confirmedPairs
+    confirmedPairs,
+    teamMap
   );
 
   if (groups.length === 0) {
@@ -77,6 +80,7 @@ export async function runMatchingJob(
 
   console.log(`✅ Produced ${groups.length} pair(s) from ${participants.length} participants`);
 
+  // Handle odd person out
   if (oddPersonOut) {
     const nextRun = getNextRunDate(new Date(), program.cadence);
     await autoSnoozeOddParticipant(workspace.id, oddPersonOut.slack_user_id, nextRun);
@@ -95,15 +99,25 @@ export async function runMatchingJob(
   });
   const roundId = await saveRoundWithMatches(program.id, participantTuples);
 
+  const slack = new WebClient(workspace.bot_token);
+
+  // Clear priority and notify priority participants they've been matched
   for (const group of groups) {
     for (const participant of group.participants) {
       if (participant.priority) {
         await clearPriority(participant.id);
+
+        // ── Snooze confirmation message improvement ──────────────────────────
+        // Let them know the system remembered them from last round
+        await slack.chat.postMessage({
+          channel: participant.slack_user_id,
+          text: `☕ Good news — we remembered you from last round and made sure you got matched first this time! Check your new intro below.`,
+        }).catch((err) => console.error('Failed to send priority match notification:', err));
       }
     }
   }
 
-  const slack = new WebClient(workspace.bot_token);
+  // Send intro DMs
   for (const group of groups) {
     await sendIntroMessage(slack, group, program.intro_message_template, roundId);
   }
@@ -150,8 +164,6 @@ async function sendIntroMessage(
       users: userIds.join(','),
     });
     const channelId = (conversationResult.channel as { id: string }).id;
-
-    // Use weighted icebreaker picker
     const icebreaker = await pickIcebreakerWeighted();
 
     const { rows } = await db.query<{ id: number }>(
@@ -205,7 +217,6 @@ function buildIntroBlocks(
 ): (Block | KnownBlock)[] {
   const mentions = participants.map((p) => `<@${p.slack_user_id}>`).join(' & ');
 
-  // Timezone-aware meeting suggestion
   const suggestion = suggestMeetingTime(timezones);
   const timeSuggestion = suggestion.displayText
     ? `\n\n🕐 *Suggested time:* ${suggestion.displayText}`
@@ -244,7 +255,6 @@ function buildIntroBlocks(
       text: { type: 'mrkdwn', text: `💬 *Conversation starter:*\n_${icebreaker}_` },
     },
     {
-      // Icebreaker rating buttons
       type: 'actions',
       block_id: 'icebreaker_rating',
       elements: [
@@ -265,13 +275,10 @@ function buildIntroBlocks(
     { type: 'divider' },
   ];
 
-  // Add Zoom links if available
   if (zoomLinks.length > 0) {
     const zoomText = zoomLinks.length === 1
       ? `📹 *Meeting room:* ${zoomLinks[0]}`
-      : zoomLinks
-          .map((link, i) => `📹 *${displayNames[i]}'s Zoom:* ${link}`)
-          .join('\n');
+      : zoomLinks.map((link, i) => `📹 *${displayNames[i]}'s Zoom:* ${link}`).join('\n');
 
     blocks.push({
       type: 'section',
@@ -280,7 +287,6 @@ function buildIntroBlocks(
     blocks.push({ type: 'divider' });
   }
 
-  // Action buttons
   blocks.push({
     type: 'actions',
     elements: [
