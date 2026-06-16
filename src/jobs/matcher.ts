@@ -11,12 +11,12 @@ import {
 import {
   getRecentMatchPairs,
   getLastRoundMatchPairs,
+  getConfirmedMatchPairs,
   saveRoundWithMatches,
   updateMatchMessageTs,
-  getConfirmedMatchPairs,
 } from '../db/matches';
 import { buildMatches, MatchGroup } from './algorithm';
-import { pickIcebreaker } from '../utils/icebreakers';
+import { pickIcebreakerWeighted } from '../utils/icebreakers_weighted';
 import { getNextRunDate } from '../utils/schedule';
 import { suggestMeetingTime } from '../utils/timezone';
 
@@ -61,13 +61,14 @@ export async function runMatchingJob(
     getLastRoundMatchPairs(program.id),
     getConfirmedMatchPairs(workspace.id),
   ]);
-  
+
   const { groups, oddPersonOut } = buildMatches(
     participants,
     recentPairs,
     lastRoundPairs,
-    confirmedPairs  
+    confirmedPairs
   );
+
   if (groups.length === 0) {
     console.log('⚠️  No groups produced — skipping run');
     await advanceNextRun(program);
@@ -139,18 +140,19 @@ async function sendIntroMessage(
 
     console.log(`📧 Emails fetched for calendar: ${emails.join(', ')}`);
 
-    const timezones = group.participants.map((p) => p.timezone ?? null);
-
-    // Collect Zoom links from participant records
     const zoomLinks = group.participants
       .map((p) => p.zoom_link)
       .filter((link): link is string => Boolean(link));
+
+    const timezones = group.participants.map((p) => p.timezone ?? null);
 
     const conversationResult = await slack.conversations.open({
       users: userIds.join(','),
     });
     const channelId = (conversationResult.channel as { id: string }).id;
-    const icebreaker = pickIcebreaker();
+
+    // Use weighted icebreaker picker
+    const icebreaker = await pickIcebreakerWeighted();
 
     const { rows } = await db.query<{ id: number }>(
       `SELECT id FROM matches WHERE match_round_id = $1 AND participant_a_id = (
@@ -196,17 +198,15 @@ function buildIntroBlocks(
   displayNames: string[],
   emails: string[],
   zoomLinks: string[],
-  timezones: (string | null)[], 
+  timezones: (string | null)[],
   icebreaker: string,
   customTemplate: string,
   matchId: number
 ): (Block | KnownBlock)[] {
   const mentions = participants.map((p) => `<@${p.slack_user_id}>`).join(' & ');
 
+  // Timezone-aware meeting suggestion
   const suggestion = suggestMeetingTime(timezones);
-  const startTime = suggestion.calendarStart;
-  const endTime = suggestion.calendarEnd;
-  
   const timeSuggestion = suggestion.displayText
     ? `\n\n🕐 *Suggested time:* ${suggestion.displayText}`
     : '';
@@ -215,12 +215,14 @@ function buildIntroBlocks(
     ? customTemplate
         .replace('{mentions}', mentions)
         .replace('{icebreaker}', icebreaker)
-        : `${mentions} — you've been matched for a coffee chat! ☕\n\nFind a 20–30 min slot that works for both of you and get to know each other.${timeSuggestion}`;
-        
+    : `${mentions} — you've been matched for a coffee chat! ☕\n\nFind a 20–30 min slot that works for both of you and get to know each other.${timeSuggestion}`;
+
   const eventTitle = encodeURIComponent(`☕ Coffee Chat: ${displayNames.join(' & ')}`);
   const eventDetails = encodeURIComponent(
     `Intro coffee chat set up by Coffee Roulette.\n\nConversation starter: ${icebreaker}`
   );
+  const startTime = suggestion.calendarStart;
+  const endTime = suggestion.calendarEnd;
 
   const guestParams = emails
     .map((e: string) => `&add=${encodeURIComponent(e)}`)
@@ -231,7 +233,6 @@ function buildIntroBlocks(
     `&text=${eventTitle}&details=${eventDetails}&dates=${startTime}/${endTime}` +
     guestParams;
 
-  // Build the blocks
   const blocks: (Block | KnownBlock)[] = [
     {
       type: 'section',
@@ -242,10 +243,29 @@ function buildIntroBlocks(
       type: 'section',
       text: { type: 'mrkdwn', text: `💬 *Conversation starter:*\n_${icebreaker}_` },
     },
+    {
+      // Icebreaker rating buttons
+      type: 'actions',
+      block_id: 'icebreaker_rating',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '👍 Great starter', emoji: true },
+          value: JSON.stringify({ matchId, question: icebreaker }),
+          action_id: 'icebreaker_up',
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '👎 Not for me', emoji: true },
+          value: JSON.stringify({ matchId, question: icebreaker }),
+          action_id: 'icebreaker_down',
+        },
+      ],
+    },
     { type: 'divider' },
   ];
 
-  // Add Zoom links if any participants have saved one
+  // Add Zoom links if available
   if (zoomLinks.length > 0) {
     const zoomText = zoomLinks.length === 1
       ? `📹 *Meeting room:* ${zoomLinks[0]}`
@@ -270,6 +290,7 @@ function buildIntroBlocks(
         style: 'primary',
         url: calendarUrl,
         action_id: 'schedule_calendar',
+        value: String(matchId),
       },
       {
         type: 'button',
