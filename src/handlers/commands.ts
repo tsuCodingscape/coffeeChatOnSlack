@@ -220,28 +220,6 @@ export function registerSlashCommands(app: App): void {
       await respond('Something went wrong. Please try again in a moment.');
     }
   });
-
-  // ── Timezone modal submission ──────────────────────────────────────────────
-  app.view('timezone_modal', async ({ ack, body, view, context, logger }) => {
-    await ack();
-
-    try {
-      const slackUserId = body.user.id;
-      const timezone = view.state.values.timezone_block.timezone_select.selected_option?.value;
-
-      if (!timezone) return;
-
-      const workspace = await findWorkspaceBySlackId(context.teamId!);
-      if (!workspace) return;
-
-      await saveTimezone(workspace.id, slackUserId, timezone);
-
-      logger.info(`🌍 Timezone saved for ${slackUserId}: ${timezone}`);
-
-    } catch (err) {
-      logger.error('Error saving timezone:', err);
-    }
-  });
 }
 
 function addDays(date: Date, days: number): Date {
