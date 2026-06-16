@@ -3,6 +3,7 @@ import type { View } from '@slack/types';
 import { db } from '../db/pool';
 import { findWorkspaceBySlackId, getProgramForWorkspace } from '../db/workspaces';
 import { getNextRunDate } from '../utils/schedule';
+import { getIcebreakerStats } from '../utils/icebreakers_weighted';
 
 /**
  * Admin commands, all under /coffee-admin to keep them separate from
@@ -264,6 +265,11 @@ interface ReportStats {
   optedOut: number;
   totalRounds: number;
   totalIntrosSent: number;
+  totalMeetingsConfirmed: number;
+  icebreakerStats: {
+    top: Array<{ question: string; net_score: number }>;
+    bottom: Array<{ question: string; net_score: number }>;
+  };
 }
 
 async function getReportStats(workspaceId: number, programId: number): Promise<ReportStats> {
@@ -292,6 +298,14 @@ async function getReportStats(workspaceId: number, programId: number): Promise<R
     [programId]
   );
 
+  const { rows: metRows } = await db.query(
+    `SELECT COUNT(DISTINCT match_id) AS count FROM feedback
+     WHERE did_meet = TRUE`,
+    []
+  );
+
+  const icebreakerStats = await getIcebreakerStats();
+
   return {
     totalParticipants: Object.values(countByStatus).reduce((a, b) => a + b, 0),
     activeParticipants: countByStatus['active'] ?? 0,
@@ -299,11 +313,16 @@ async function getReportStats(workspaceId: number, programId: number): Promise<R
     optedOut: countByStatus['opted_out'] ?? 0,
     totalRounds: parseInt(roundRows[0].count, 10),
     totalIntrosSent: parseInt(matchRows[0].count, 10),
+    totalMeetingsConfirmed: parseInt(metRows[0].count, 10),
+    icebreakerStats,
   };
 }
-
 function buildReportText(stats: ReportStats): string {
-  return (
+  const meetRate = stats.totalIntrosSent > 0
+    ? Math.round((stats.totalMeetingsConfirmed / stats.totalIntrosSent) * 100)
+    : 0;
+
+  let text =
     `*☕ Coffee Roulette — Usage Report*\n\n` +
     `*Participants*\n` +
     `• Total ever enrolled: ${stats.totalParticipants}\n` +
@@ -313,6 +332,22 @@ function buildReportText(stats: ReportStats): string {
     `*Matching*\n` +
     `• Rounds completed: ${stats.totalRounds}\n` +
     `• Total intros sent: ${stats.totalIntrosSent}\n` +
-    `• Avg matches per round: ${stats.totalRounds > 0 ? (stats.totalIntrosSent / stats.totalRounds).toFixed(1) : '—'}`
-  );
+    `• Meetings confirmed: ${stats.totalMeetingsConfirmed} (${meetRate}% confirmation rate)\n` +
+    `• Avg matches per round: ${stats.totalRounds > 0 ? (stats.totalIntrosSent / stats.totalRounds).toFixed(1) : '—'}`;
+
+  if (stats.icebreakerStats.top.length > 0) {
+    text += `\n\n*🏆 Top icebreakers:*\n`;
+    text += stats.icebreakerStats.top
+      .map((q) => `• "${q.question}" _(+${q.net_score})_`)
+      .join('\n');
+  }
+
+  if (stats.icebreakerStats.bottom.length > 0) {
+    text += `\n\n*📉 Lowest rated icebreakers:*\n`;
+    text += stats.icebreakerStats.bottom
+      .map((q) => `• "${q.question}" _(${q.net_score})_`)
+      .join('\n');
+  }
+
+  return text;
 }
