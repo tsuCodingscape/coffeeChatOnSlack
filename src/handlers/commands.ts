@@ -203,11 +203,74 @@ export function registerSlashCommands(app: App): void {
           break;
         }
 
+        case 'history': {
+          if (!participant) {
+            await respond(`You're not registered. Join <#${program?.channel_id}> to opt in.`);
+            return;
+          }
+        
+          // Fetch last 5 matches for this participant
+          const { rows } = await db.query<{
+            matched_with: string;
+            matched_on: Date;
+            did_meet: boolean | null;
+          }>(
+            `
+            SELECT
+              CASE
+                WHEN m.participant_a_id = p.id THEN pb.slack_user_id
+                ELSE pa.slack_user_id
+              END AS matched_with,
+              mr.run_at AS matched_on,
+              f.did_meet
+            FROM matches m
+            JOIN participants pa  ON pa.id = m.participant_a_id
+            JOIN participants pb  ON pb.id = m.participant_b_id
+            JOIN match_rounds mr  ON mr.id = m.match_round_id
+            JOIN programs prog    ON prog.id = mr.program_id
+            JOIN participants p   ON p.slack_user_id = $1 AND p.workspace_id = $2
+              AND (m.participant_a_id = p.id OR m.participant_b_id = p.id)
+            LEFT JOIN feedback f  ON f.match_id = m.id AND f.participant_id = p.id
+            WHERE prog.workspace_id = $2
+              AND mr.status = 'completed'
+            ORDER BY mr.run_at DESC
+            LIMIT 5
+            `,
+            [user_id, workspace.id]
+          );
+        
+          if (rows.length === 0) {
+            await respond('You haven\'t been matched yet — your first match is coming soon! ☕');
+            return;
+          }
+        
+          const historyLines = rows.map((row) => {
+            const date = new Date(row.matched_on).toLocaleDateString('en-US', {
+              month: 'short',
+              day: 'numeric',
+              year: 'numeric',
+            });
+            const metStatus = row.did_meet === true
+              ? '✅ Met'
+              : row.did_meet === false
+              ? '❌ Didn\'t meet'
+              : '⏳ Pending';
+        
+            return `• <@${row.matched_with}> — ${date} — ${metStatus}`;
+          });
+        
+          await respond(
+            `*☕ Your coffee chat history:*\n\n${historyLines.join('\n')}`
+          );
+          break;
+        }
+
         default: {
           await respond(
             '*Coffee Roulette commands:*\n' +
             '• `/coffee timezone` — set your timezone for smarter scheduling\n' +
             '• `/coffee zoom` — add or update your Zoom link\n' +
+            '• `/coffee history` — see your past matches\n' +
             '• `/coffee snooze` — skip the next round\n' +
             '• `/coffee optout` — leave the rotation\n' +
             '• `/coffee rejoin` — come back to the rotation\n' +
