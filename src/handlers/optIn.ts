@@ -30,7 +30,6 @@ export function registerOptInHandlers(app: App): void {
 
       logger.info(`✅ Participant enrolled: ${user} in workspace ${workspace.slack_workspace_id}`);
 
-      // Send welcome DM with Zoom + timezone prompts
       await app.client.chat.postMessage({
         token: workspace.bot_token,
         channel: user,
@@ -83,30 +82,33 @@ export function registerOptInHandlers(app: App): void {
   // ── Zoom modal submission ─────────────────────────────────────────────────
   app.view('zoom_link_modal', async ({ ack, body, view, context, logger }) => {
     await ack();
-    try {
-      const slackUserId = body.user.id;
-      const zoomLink = view.state.values.zoom_link_block.zoom_link_input.value ?? '';
 
-      if (!zoomLink.includes('zoom.us')) {
-        logger.warn(`Invalid Zoom link submitted by ${slackUserId}: ${zoomLink}`);
-        return;
+    const slackUserId = body.user.id;
+    const zoomLink = view.state.values.zoom_link_block.zoom_link_input.value ?? '';
+
+    setImmediate(async () => {
+      try {
+        if (!zoomLink.includes('zoom.us')) {
+          logger.warn(`Invalid Zoom link submitted by ${slackUserId}: ${zoomLink}`);
+          return;
+        }
+
+        const workspace = await findWorkspaceBySlackId(context.teamId!);
+        if (!workspace) return;
+
+        await saveZoomLink(workspace.id, slackUserId, zoomLink);
+        logger.info(`📹 Zoom link saved for ${slackUserId}`);
+
+        await app.client.chat.postMessage({
+          token: workspace.bot_token,
+          channel: slackUserId,
+          text: `✅ Got it! Your Zoom link has been saved. It'll be included in your intro DM when you get matched. You can update it any time with \`/coffee zoom\`.`,
+        });
+
+      } catch (err) {
+        logger.error('Error saving Zoom link:', err);
       }
-
-      const workspace = await findWorkspaceBySlackId(context.teamId!);
-      if (!workspace) return;
-
-      await saveZoomLink(workspace.id, slackUserId, zoomLink);
-      logger.info(`📹 Zoom link saved for ${slackUserId}`);
-
-      await app.client.chat.postMessage({
-        token: workspace.bot_token,
-        channel: slackUserId,
-        text: `✅ Got it! Your Zoom link has been saved. It'll be included in your intro DM when you get matched. You can update it any time with \`/coffee zoom\`.`,
-      });
-
-    } catch (err) {
-      logger.error('Error saving Zoom link:', err);
-    }
+    });
   });
 
   // ── Timezone button click ─────────────────────────────────────────────────
@@ -125,27 +127,30 @@ export function registerOptInHandlers(app: App): void {
   // ── Timezone modal submission ─────────────────────────────────────────────
   app.view('timezone_modal', async ({ ack, body, view, context, logger }) => {
     await ack();
-    try {
-      const slackUserId = body.user.id;
-      const timezone = view.state.values.timezone_block.timezone_select.selected_option?.value;
 
-      if (!timezone) return;
+    const slackUserId = body.user.id;
+    const timezone = view.state.values.timezone_block.timezone_select.selected_option?.value;
 
-      const workspace = await findWorkspaceBySlackId(context.teamId!);
-      if (!workspace) return;
+    setImmediate(async () => {
+      try {
+        if (!timezone) return;
 
-      await saveTimezone(workspace.id, slackUserId, timezone);
-      logger.info(`🌍 Timezone saved for ${slackUserId}: ${timezone}`);
+        const workspace = await findWorkspaceBySlackId(context.teamId!);
+        if (!workspace) return;
 
-      await app.client.chat.postMessage({
-        token: workspace.bot_token,
-        channel: slackUserId,
-        text: `✅ Timezone saved as *${timezone}*. This will be used to suggest meeting times that work for you and your match.`,
-      });
+        await saveTimezone(workspace.id, slackUserId, timezone);
+        logger.info(`🌍 Timezone saved for ${slackUserId}: ${timezone}`);
 
-    } catch (err) {
-      logger.error('Error saving timezone:', err);
-    }
+        await app.client.chat.postMessage({
+          token: workspace.bot_token,
+          channel: slackUserId,
+          text: `✅ Timezone saved as *${timezone}*. This will be used to suggest meeting times that work for you and your match.`,
+        });
+
+      } catch (err) {
+        logger.error('Error saving timezone:', err);
+      }
+    });
   });
 }
 
@@ -264,7 +269,7 @@ function buildZoomModal(): View {
 
 function buildTimezoneModal(): View {
   return {
-    type: 'modal',     
+    type: 'modal',
     callback_id: 'timezone_modal',
     title: { type: 'plain_text', text: 'Set your timezone' },
     submit: { type: 'plain_text', text: 'Save' },
