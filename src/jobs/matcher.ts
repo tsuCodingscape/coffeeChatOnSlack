@@ -82,7 +82,7 @@ export async function runMatchingJob(
 
   console.log(`✅ Produced ${groups.length} pair(s) from ${participants.length} participants`);
 
-  // Handle odd person out — notify before advancing schedule
+  // Handle odd person out
   if (oddPersonOut) {
     const nextRun = getNextRunDate(new Date(), program.cadence);
     await autoSnoozeOddParticipant(workspace.id, oddPersonOut.slack_user_id, nextRun);
@@ -103,8 +103,7 @@ export async function runMatchingJob(
   const roundId = await saveRoundWithMatches(program.id, participantTuples);
 
   // ── Advance next run BEFORE sending DMs ──────────────────────────────────
-  // This prevents the scheduler from picking up the same program again
-  // while DMs are still being sent
+  // Prevents scheduler from picking up the same program while DMs are sending
   await advanceNextRun(program);
 
   // Clear priority flags and notify priority participants
@@ -236,9 +235,16 @@ function buildIntroBlocks(
     : `${mentions} — you've been matched for a coffee chat! ☕\n\nFind a 20–30 min slot that works for both of you and get to know each other.${timeSuggestion}`;
 
   const eventTitle = encodeURIComponent(`☕ Coffee Chat: ${displayNames.join(' & ')}`);
+
+  // Include Zoom link in calendar event description if available
+  const zoomDetail = zoomLinks.length > 0
+    ? `\n\nZoom link: ${zoomLinks[0]}`
+    : '';
+
   const eventDetails = encodeURIComponent(
-    `Intro coffee chat set up by Coffee Roulette.\n\nConversation starter: ${icebreaker}`
+    `Intro coffee chat set up by Coffee Roulette.\n\nConversation starter: ${icebreaker}${zoomDetail}`
   );
+
   const startTime = suggestion.calendarStart;
   const endTime = suggestion.calendarEnd;
 
