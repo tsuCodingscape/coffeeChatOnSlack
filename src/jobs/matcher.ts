@@ -37,6 +37,8 @@ interface Workspace {
   bot_token: string;
 }
 
+// ─── Main entry point ─────────────────────────────────────────────────────────
+
 export async function runMatchingJob(
   program: Program,
   workspace: Workspace
@@ -63,7 +65,7 @@ export async function runMatchingJob(
     getConfirmedMatchPairs(workspace.id),
     getParticipantTeams(workspace.id),
   ]);
-  
+
   const { groups, oddPersonOut } = buildMatches(
     participants,
     recentPairs,
@@ -80,7 +82,7 @@ export async function runMatchingJob(
 
   console.log(`✅ Produced ${groups.length} pair(s) from ${participants.length} participants`);
 
-  // Handle odd person out
+  // Handle odd person out — notify before advancing schedule
   if (oddPersonOut) {
     const nextRun = getNextRunDate(new Date(), program.cadence);
     await autoSnoozeOddParticipant(workspace.id, oddPersonOut.slack_user_id, nextRun);
@@ -93,22 +95,24 @@ export async function runMatchingJob(
     }).catch((err) => console.error('Failed to notify odd person out:', err));
   }
 
+  // Persist the round
   const participantTuples = groups.map((g) => {
     const [a, b] = g.participants;
     return [a.id, b.id] as [number, number, number?];
   });
   const roundId = await saveRoundWithMatches(program.id, participantTuples);
 
-  const slack = new WebClient(workspace.bot_token);
+  // ── Advance next run BEFORE sending DMs ──────────────────────────────────
+  // This prevents the scheduler from picking up the same program again
+  // while DMs are still being sent
+  await advanceNextRun(program);
 
-  // Clear priority and notify priority participants they've been matched
+  // Clear priority flags and notify priority participants
+  const slack = new WebClient(workspace.bot_token);
   for (const group of groups) {
     for (const participant of group.participants) {
       if (participant.priority) {
         await clearPriority(participant.id);
-
-        // ── Snooze confirmation message improvement ──────────────────────────
-        // Let them know the system remembered them from last round
         await slack.chat.postMessage({
           channel: participant.slack_user_id,
           text: `☕ Good news — we remembered you from last round and made sure you got matched first this time! Check your new intro below.`,
@@ -122,9 +126,10 @@ export async function runMatchingJob(
     await sendIntroMessage(slack, group, program.intro_message_template, roundId);
   }
 
-  await advanceNextRun(program);
   console.log(`🎉 Matching run complete — ${groups.length} intros sent`);
 }
+
+// ─── DM sending ──────────────────────────────────────────────────────────────
 
 async function sendIntroMessage(
   slack: WebClient,
@@ -199,6 +204,8 @@ async function sendIntroMessage(
     console.error(`❌ Failed to send intro DM to [${userIds.join(', ')}]:`, err);
   }
 }
+
+// ─── Message builders ─────────────────────────────────────────────────────────
 
 function buildIntroFallbackText(participants: Participant[]): string {
   const mentions = participants.map((p) => `<@${p.slack_user_id}>`).join(' and ');
@@ -319,6 +326,8 @@ function buildIntroBlocks(
 
   return blocks;
 }
+
+// ─── Schedule advancement ─────────────────────────────────────────────────────
 
 async function advanceNextRun(program: Program): Promise<void> {
   const nextRun = getNextRunDate(new Date(), program.cadence);
