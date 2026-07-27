@@ -5,6 +5,8 @@ import { registerOptInHandlers } from './handlers/optIn';
 import { registerSlashCommands } from './handlers/commands';
 import { registerAdminHandlers } from './handlers/admin';
 import { registerFeedbackHandlers } from './handlers/feedback';
+import { OAUTH_SCOPES, OAUTH_CALLBACK_OPTIONS } from './handlers/install';
+import { postgresInstallationStore } from './db/installations';
 import { startScheduler } from './jobs/scheduler';
 
 const isProduction = process.env.NODE_ENV === 'production';
@@ -19,11 +21,21 @@ async function main(): Promise<void> {
     const receiver = new ExpressReceiver({
       signingSecret: process.env.SLACK_SIGNING_SECRET!,
       endpoints: '/slack/events',
-      processBeforeResponse: true,  
+      processBeforeResponse: true,
+      clientId: process.env.SLACK_CLIENT_ID!,
+      clientSecret: process.env.SLACK_CLIENT_SECRET!,
+      stateSecret: process.env.SLACK_STATE_SECRET!,
+      scopes: OAUTH_SCOPES,
+      installationStore: postgresInstallationStore,
+      installerOptions: {
+        callbackOptions: OAUTH_CALLBACK_OPTIONS,
+      },
     });
-  
+
+    // No static `token` here — the OAuth installer's authorize() resolves
+    // each incoming request's bot token from postgresInstallationStore,
+    // which is what lets one deployment serve many Slack workspaces.
     app = new App({
-      token: process.env.SLACK_BOT_TOKEN,
       receiver,
       processBeforeResponse: true,
     });
