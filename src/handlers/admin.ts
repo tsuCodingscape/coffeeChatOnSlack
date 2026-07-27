@@ -5,6 +5,7 @@ import { findWorkspaceBySlackId, getProgramForWorkspace } from '../db/workspaces
 import { getNextRunDate } from '../utils/schedule';
 import { getIcebreakerStats } from '../utils/icebreakers_weighted';
 import { getTeamSummary, setParticipantTeam, removeParticipantTeam } from '../db/exclusions';
+import { isWorkspaceAdmin } from '../utils/authorization';
 
 export function registerAdminHandlers(app: App): void {
 
@@ -17,6 +18,11 @@ export function registerAdminHandlers(app: App): void {
       const workspace = await findWorkspaceBySlackId(context.teamId!);
       if (!workspace) {
         await respond('⚠️ Coffee Roulette isn\'t installed in this workspace yet.');
+        return;
+      }
+
+      if (!(await isWorkspaceAdmin(client, command.user_id))) {
+        await respond('🚫 Only workspace admins/owners can use `/coffee-admin`.');
         return;
       }
 
@@ -140,7 +146,7 @@ export function registerAdminHandlers(app: App): void {
   });
 
   // ── Setup modal submission ──────────────────────────────────────────────────
-  app.view('coffee_setup_modal', async ({ ack, body, view, context, logger }) => {
+  app.view('coffee_setup_modal', async ({ ack, body, view, context, logger, client }) => {
     await ack();
 
     setImmediate(async () => {
@@ -153,6 +159,11 @@ export function registerAdminHandlers(app: App): void {
 
         const workspace = await findWorkspaceBySlackId(context.teamId!);
         if (!workspace) return;
+
+        if (!(await isWorkspaceAdmin(client, body.user.id))) {
+          logger.warn(`Rejected coffee_setup_modal submission from non-admin ${body.user.id}`);
+          return;
+        }
 
         const nextRun = getNextRunDate(new Date(), cadence);
 
@@ -186,7 +197,7 @@ export function registerAdminHandlers(app: App): void {
   });
 
   // ── Team modal submission ───────────────────────────────────────────────────
-  app.view('team_assignment_modal', async ({ ack, body, view, context, logger }) => {
+  app.view('team_assignment_modal', async ({ ack, body, view, context, logger, client }) => {
     await ack();
 
     setImmediate(async () => {
@@ -198,6 +209,11 @@ export function registerAdminHandlers(app: App): void {
 
         const workspace = await findWorkspaceBySlackId(context.teamId!);
         if (!workspace) return;
+
+        if (!(await isWorkspaceAdmin(client, body.user.id))) {
+          logger.warn(`Rejected team_assignment_modal submission from non-admin ${body.user.id}`);
+          return;
+        }
 
         // Find participant
         const { rows } = await db.query<{ id: number }>(
